@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+
+.coverage
+coverage.xml
+junit.xml
+artifacts/
+.pytest_cache/
+__pycache__/

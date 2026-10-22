@@ -1,5 +1,6 @@
 # AI Quiz Assistant — Backend API
 
+![Quality checks](https://github.com/XaedynA/ai-quiz-assistant-backend/actions/workflows/tests.yml/badge.svg)
 A Node.js/Express backend for an AI-powered quiz assistant. It verifies Supabase user sessions, generates explanations through the OpenAI Responses API, and tracks per-user question usage.
 
 > **Portfolio scope:** This repository contains the backend API, not the browser-extension UI.
@@ -18,12 +19,14 @@ JavaScript · Node.js · Express · OpenAI API · Supabase
 
 ## Getting started
 
-**Prerequisites:** Node.js, an OpenAI API key, and a configured Supabase project with a `profiles` table.
+**Prerequisites:** Node.js 22+, an OpenAI API key, and a configured Supabase project with a `profiles` table.
 
 ```bash
 npm ci
 cp .env.example .env
 ```
+
+Apply `migrations/001_atomic_usage.sql` to your existing Supabase project using a trusted migration connection **before starting this version**. Review and back up the schema first; the migration revokes client quota writes. Do not apply it automatically to production.
 
 Edit `.env` with your **own** credentials. Never commit `.env` or share server-side keys. Start the API:
 
@@ -43,7 +46,7 @@ The server listens at `http://localhost:3000`.
 
 ## API endpoints
 
-All endpoints require `Authorization: Bearer <supabase_access_token>`.
+`GET /health` is public. All other documented endpoints require `Authorization: Bearer <supabase_access_token>`.
 
 ### `GET /profile`
 
@@ -74,11 +77,34 @@ Example successful response shape (illustrative):
 
 ## Supabase data requirements
 
-The API expects a `profiles` table keyed by the authenticated user's `id` with these fields: `plan`, `questions_used`, `question_limit`, and `subscription_status`. This repository does not include a database migration; you must set up the schema and access policies in your own Supabase project.
+The API expects a `profiles` table keyed by the authenticated user's `id` with these fields: `plan`, `questions_used`, `question_limit`, and `subscription_status`. The migration adds atomic reservations to an existing profiles table. IDs must be UUIDs; counters must be nonnegative integers. Create profiles through a trusted signup trigger/admin flow. Configure RLS so users can read only their own profile; clients must never edit quota, plan, or subscription fields.
 
-## Current limitations and next steps
+## Reliability and security controls
 
-This is a portfolio demonstration of an existing backend, **not a production-hardened service**. Before deploying publicly, add request validation, rate limiting, restricted CORS origins, robust model-response validation, and atomic usage accounting (to avoid concurrent requests bypassing limits). Add automated tests and deployment documentation. The existing code does not currently enforce subscription status separately from usage limits.
+- Validates input types, lengths and choice count; rejects malformed JSON and bodies over 32 KB.
+- Verifies bearer tokens server-side; SDK failures do not expose internal errors or credentials.
+- Uses a configurable CORS allowlist (`ALLOWED_ORIGINS`, comma separated), no-store responses, and 60 requests/minute per IP.
+- Reserves quota atomically in PostgreSQL **before** a provider call; failures request an idempotent refund.
+- Validates model JSON and answer letters; limits provider output and uses a 30-second timeout with retries disabled.
+- Preserves `/profile`, `/answer` and successful response field names. New `GET /health` supports uptime checks.
+- Imports without starting a server, allowing injected fake providers and credential-free API tests.
+
+```bash
+npm test
+npm run check
+```
+
+CI runs API tests on Node 22 and 24, plus real PostgreSQL tests for simultaneous reservations, duplicate refunds, and forbidden client quota writes. No paid API calls or production credentials are needed.
+
+## Deployment boundaries and recovery
+
+This is a portfolio backend, not a complete billing service. Subscription status is informational; the trusted `question_limit` is authoritative. Rate limiting is in-memory and per process; use a shared gateway/store for multiple replicas. The default bind address is loopback (`HOST=127.0.0.1`); configure TLS and a carefully trusted reverse proxy for public deployment. Do not blindly trust forwarded IP headers.
+
+`OPENAI_MODEL` defaults to `gpt-5-mini`; `PORT` defaults to 3000. Explicitly allow your frontend/extension origin. CORS is a browser policy, not authentication.
+
+A crash or database outage after quota reservation can leave a row in `question_reservations`. Monitor old rows and reconcile them manually: call `finish_question(reservation_id, true)` only after confirming the request failed and is no longer running. Successful finalized reservations cannot be refunded again. Never log tokens, questions or raw provider errors. There is no automatic retry of generation after a failure; repeated client submissions may incur multiple successful uses.
+
+Local tests stub external providers; PostgreSQL CI checks the actual migration, but does not replace a staging Supabase integration test. The migration requires review against existing grants, RLS policies, signup and billing workflows. No hosted database is modified by this PR.
 
 ## Security
 
